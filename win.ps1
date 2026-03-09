@@ -1,3 +1,8 @@
+win.ps1
+19.30 KB•467 linhas
+•
+A formatação pode estar inconsistente com a fonte
+
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
