@@ -49,22 +49,35 @@ function Check-Winget {
 #  0. DEFAULT SOFTWARES
 # -------------------------------------------
 function Fix-WingetCertificate {
-    Write-Info "Fixing winget certificate and source agreements..."
- 
-    # Step 1 - Bypass cert pinning temporarily and update winget
+    Write-Info "Repairing winget sources..."
+
+    # Step 1 - Delete corrupted winget source cache
+    $localAppData = [System.Environment]::GetFolderPath("LocalApplicationData")
+    $wingetCache = "$localAppData\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\Microsoft.Winget.Source_8wekyb3d8bbwe"
+    $wingetCache2 = "$localAppData\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\Microsoft.Winget.MSStore.Source_8wekyb3d8bbwe"
+
+    if (Test-Path $wingetCache)  { Remove-Item $wingetCache  -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $wingetCache2) { Remove-Item $wingetCache2 -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Info "Winget cache cleared."
+
+    # Step 2 - Bypass cert and update winget itself
     winget settings --enable BypassCertificatePinningForMicrosoftStore
     winget upgrade Microsoft.AppInstaller --accept-source-agreements --accept-package-agreements
     winget settings --disable BypassCertificatePinningForMicrosoftStore
- 
-    # Step 2 - Reset and update all sources, accepting all agreements
-    winget source reset --force
+
+    # Step 3 - Remove and re-add sources from scratch
+    winget source remove winget   2>&1 | Out-Null
+    winget source remove msstore  2>&1 | Out-Null
+    winget source add winget  https://cdn.winget.microsoft.com/cache --accept-source-agreements 2>&1 | Out-Null
+    winget source add msstore https://storeedgefd.dsx.mp.microsoft.com/v9.0 --type Microsoft.Rest --accept-source-agreements 2>&1 | Out-Null
+
+    # Step 4 - Force update all sources
     winget source update --accept-source-agreements
- 
-    # Step 3 - Accept msstore terms explicitly by doing a dummy search
-    Write-Info "Accepting Microsoft Store source agreements..."
+
+    # Step 5 - Accept msstore terms
     winget search --source msstore --accept-source-agreements --query "dummy" 2>&1 | Out-Null
- 
-    Write-Status "Winget sources ready." Green
+
+    Write-Status "Winget sources repaired and ready." Green
 }
  
 function Install-DefaultSoftwares {
