@@ -42,7 +42,23 @@ function Check-Winget {
         Write-Info "winget not found. Opening Microsoft Store..."
         Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
         Read-Host "  Press Enter after winget is installed"
+        return
     }
+
+    # Check if winget version is outdated (minimum v1.6)
+    $wingetVersion = (winget --version) -replace 'v',''
+    $major = [int]($wingetVersion.Split('.')[0])
+    $minor = [int]($wingetVersion.Split('.')[1])
+
+    if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 6)) {
+        Write-Info "Winget version $wingetVersion is outdated. Opening Microsoft Store to update..."
+        Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
+        Read-Host "  Press Enter after winget is updated, then re-run this script"
+        exit
+    }
+
+    Write-Status "Winget v$wingetVersion detected." Green
+}
 }
 
 # -------------------------------------------
