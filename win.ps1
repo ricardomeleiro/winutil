@@ -48,6 +48,25 @@ function Check-Winget {
 # -------------------------------------------
 #  0. DEFAULT SOFTWARES
 # -------------------------------------------
+function Fix-WingetCertificate {
+    Write-Info "Fixing winget certificate and source agreements..."
+ 
+    # Step 1 - Bypass cert pinning temporarily and update winget
+    winget settings --enable BypassCertificatePinningForMicrosoftStore
+    winget upgrade Microsoft.AppInstaller --accept-source-agreements --accept-package-agreements
+    winget settings --disable BypassCertificatePinningForMicrosoftStore
+ 
+    # Step 2 - Reset and update all sources, accepting all agreements
+    winget source reset --force
+    winget source update --accept-source-agreements
+ 
+    # Step 3 - Accept msstore terms explicitly by doing a dummy search
+    Write-Info "Accepting Microsoft Store source agreements..."
+    winget search --source msstore --accept-source-agreements --query "dummy" 2>&1 | Out-Null
+ 
+    Write-Status "Winget sources ready." Green
+}
+ 
 function Install-DefaultSoftwares {
     $defaults = @(
         @{Name = "Microsoft 365 (Office)"; WinGet = "Microsoft.Office"; Store = $false },
