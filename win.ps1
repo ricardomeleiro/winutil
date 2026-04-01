@@ -59,7 +59,6 @@ function Check-Winget {
 
     Write-Status "Winget v$wingetVersion detected." Green
 }
-}
 
 # -------------------------------------------
 #  0. DEFAULT SOFTWARES
