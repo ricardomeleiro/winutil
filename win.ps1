@@ -37,12 +37,50 @@ function Confirm-Action {
     return ($r -match '^[Yy]')
 }
 
-function Check-Winget {
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Info "winget not found. Opening Microsoft Store..."
+function Install-WingetLatest {
+    Write-Info "Downloading and installing the latest winget (App Installer)..."
+    try {
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest"
+        $msixBundle = $releases.assets | Where-Object { $_.name -like "*.msixbundle" } | Select-Object -First 1
+        $vcLibs = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+        $uiXaml  = ($releases.assets | Where-Object { $_.name -like "*.appx" -and $_.name -like "*UIXaml*" } | Select-Object -First 1)
+
+        $tmpDir = "$env:TEMP\winget-install"
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+        Write-Info "Downloading VCLibs..."
+        Invoke-WebRequest -Uri $vcLibs -OutFile "$tmpDir\vclibs.appx" -UseBasicParsing
+
+        if ($uiXaml) {
+            Write-Info "Downloading UI.Xaml..."
+            Invoke-WebRequest -Uri $uiXaml.browser_download_url -OutFile "$tmpDir\uixaml.appx" -UseBasicParsing
+            Add-AppxPackage -Path "$tmpDir\uixaml.appx" -ErrorAction SilentlyContinue
+        }
+
+        Add-AppxPackage -Path "$tmpDir\vclibs.appx" -ErrorAction SilentlyContinue
+
+        Write-Info "Downloading winget $($releases.tag_name)..."
+        Invoke-WebRequest -Uri $msixBundle.browser_download_url -OutFile "$tmpDir\winget.msixbundle" -UseBasicParsing
+        Add-AppxPackage -Path "$tmpDir\winget.msixbundle"
+
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        Write-Status "Winget installed successfully." Green
+    } catch {
+        Write-Warning "Automatic install failed: $_"
+        Write-Info "Opening Microsoft Store as fallback..."
         Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
         Read-Host "  Press Enter after winget is installed"
-        return
+    }
+}
+
+function Check-Winget {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Info "winget not found. Installing automatically..."
+        Install-WingetLatest
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Warning "winget still not available after install. Please restart the script."
+            exit
+        }
     }
 
     # Check if winget version is outdated (minimum v1.6)
@@ -51,10 +89,9 @@ function Check-Winget {
     $minor = [int]($wingetVersion.Split('.')[1])
 
     if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 6)) {
-        Write-Info "Winget version $wingetVersion is outdated. Opening Microsoft Store to update..."
-        Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
-        Read-Host "  Press Enter after winget is updated, then re-run this script"
-        exit
+        Write-Info "Winget version $wingetVersion is outdated. Updating automatically..."
+        Install-WingetLatest
+        $wingetVersion = (winget --version) -replace 'v',''
     }
 
     Write-Status "Winget v$wingetVersion detected." Green
