@@ -223,9 +223,10 @@ $Apps = [ordered]@{
         @{Name = "PowerToys"; WinGet = "Microsoft.PowerToys" }
     )
     "Security"      = @(
-        @{Name = "Malwarebytes"; WinGet = "Malwarebytes.Malwarebytes" },
-        @{Name = "Bitwarden"; WinGet = "Bitwarden.Bitwarden" },
-        @{Name = "WireGuard"; WinGet = "WireGuard.WireGuard" }
+    @{Name = "Malwarebytes"; WinGet = "Malwarebytes.Malwarebytes" },
+    @{Name = "Bitwarden"; WinGet = "Bitwarden.Bitwarden" },
+    @{Name = "WireGuard"; WinGet = "WireGuard.WireGuard" },
+    @{Name = "Wazuh Agent"; WinGet = "Wazuh.WazuhAgent" }
     )
 }
 
