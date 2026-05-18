@@ -542,8 +542,8 @@ function Connect-ADSession {
     $script:adDC     = Read-Host "  Controlador de Domínio (IP ou hostname)"
     $script:adUser   = Read-Host "  Usuário administrador (ex: Administrator)"
 
-    # Deriva o BaseDN automaticamente a partir do domínio
-    $script:adBaseDN = ($script:adDomain -split '\.' | ForEach-Object { "DC=$_" }) -join ','
+    # Deriva o BaseDN automaticamente a partir do domínio (ex: empresa.local -> DC=empresa,DC=local)
+    $script:adBaseDN = "DC=" + ($script:adDomain.Replace('.', ',DC='))
 
     $adminPass = Read-Host "  Senha" -AsSecureString
     $cred = New-Object System.Management.Automation.PSCredential("$($script:adDomain)\$($script:adUser)", $adminPass)
@@ -551,7 +551,8 @@ function Connect-ADSession {
     try {
         Set-Item WSMan:\localhost\Client\TrustedHosts -Value $script:adDC -Force -ErrorAction Stop
 
-        $script:adSession = New-PSSession -ComputerName $script:adDC -Credential $cred -ErrorAction Stop
+        # -Authentication Negotiate usa NTLM quando Kerberos não funciona (ex: conexão via IP)
+        $script:adSession = New-PSSession -ComputerName $script:adDC -Credential $cred -Authentication Negotiate -ErrorAction Stop
         Invoke-Command -Session $script:adSession -ScriptBlock { Import-Module ActiveDirectory } -ErrorAction Stop
         $script:adConnected = $true
         Write-Status "Conectado ao DC $($script:adDC) ($($script:adDomain)) com sucesso." Green
