@@ -727,18 +727,49 @@ function AD-RemoveComputer {
     catch { Write-Err "$_" }
 }
 
+function Select-ADOUDynamic {
+    param([string]$prompt = "  Selecione a OU de destino")
+    try {
+        $allOUs = Invoke-Command -Session $script:adSession -ScriptBlock {
+            Get-ADOrganizationalUnit -Filter * -Properties CanonicalName |
+                Sort-Object CanonicalName | Select-Object Name, DistinguishedName, CanonicalName
+        }
+        if (-not $allOUs -or @($allOUs).Count -eq 0) { Write-Err "Nenhuma OU encontrada no domínio."; return $null }
+
+        Write-Host ""
+        $i = 1; $ouMap = @{}
+        foreach ($ou in @($allOUs)) {
+            Write-Host "  [$i] $($ou.CanonicalName)" -ForegroundColor Gray
+            $ouMap[$i] = [string]$ou.DistinguishedName
+            $i++
+        }
+        Write-Host "  [0] Cancelar"
+        Write-Host ""
+        $sel = Read-Host $prompt
+        if ($sel -eq '0' -or [string]::IsNullOrWhiteSpace($sel)) { return $null }
+        $selInt = [int]$sel
+        if (-not $ouMap.ContainsKey($selInt)) { Write-Err "Opção inválida."; return $null }
+        return $ouMap[$selInt]
+    }
+    catch { Write-Err "Erro ao buscar OUs: $_"; return $null }
+}
+
 function AD-MoveObject {
     $obj = Read-Host "  Nome do objeto (usuário ou computador)"
-    $newOU = Select-ADOU
-    if ($newOU) {
-        try {
-            Invoke-Command -Session $script:adSession -ScriptBlock {
-                param($o, $t) Get-ADObject -Filter { Name -eq $o } | Move-ADObject -TargetPath $t -ErrorAction Stop
-            } -ArgumentList $obj, $newOU
-            Write-Status "Objeto $obj movido com sucesso." Green
-        }
-        catch { Write-Err "$_" }
+    Write-Info "Buscando OUs disponíveis..."
+    $targetOU = Select-ADOUDynamic "  Selecione a OU de destino"
+    if (-not $targetOU) { return }
+    try {
+        Invoke-Command -Session $script:adSession -ScriptBlock {
+            param($o, $t)
+            $found = @(Get-ADObject -Filter { Name -eq $o } -ErrorAction Stop)
+            if ($found.Count -eq 0) { throw "Objeto '$o' não encontrado." }
+            if ($found.Count -gt 1)  { throw "Múltiplos objetos com o nome '$o'. Seja mais específico." }
+            $found[0] | Move-ADObject -TargetPath $t -ErrorAction Stop
+        } -ArgumentList $obj, $targetOU
+        Write-Status "Objeto '$obj' movido com sucesso." Green
     }
+    catch { Write-Err "Erro: $_" }
 }
 
 function AD-AddUserToGroup {
@@ -868,61 +899,133 @@ function AD-ListComputers {
 }
 
 function AD-SyncAD {
+    Write-Host ""
+    Write-Host "  [1] Delta  - sincroniza apenas alterações recentes (recomendado)"
+    Write-Host "  [2] Full   - sincronização completa"
+    Write-Host ""
+    $tipo = Read-Host "  Selecione"
+    $policy = if ($tipo -eq '2') { 'Initial' } else { 'Delta' }
+    Write-Info "Iniciando sincronização $policy..."
     try {
         Invoke-Command -Session $script:adSession -ScriptBlock {
+            param($p)
             Import-Module ADSync -ErrorAction Stop
-            Start-ADSyncSyncCycle -PolicyType Delta -ErrorAction Stop
-        } -ErrorAction Stop
-        Write-Status "Sincronização AD concluída." Green
+            Start-ADSyncSyncCycle -PolicyType $p -ErrorAction Stop
+        } -ArgumentList $policy -ErrorAction Stop
+        Write-Status "Sincronização $policy iniciada com sucesso no DC." Green
     }
-    catch { Write-Err "Erro ao sincronizar AD: $_" }
+    catch { Write-Err "Erro: $_`n  Verifique se o Azure AD Connect está instalado no DC." }
 }
 
 function AD-ExportUsers {
-    $ouPath = Select-ADOU
-    $file = Read-Host "  Arquivo de saída (ex: usuarios.csv)"
-    if ($ouPath) {
-        try {
-            $users = Invoke-Command -Session $script:adSession -ScriptBlock {
-                param($p) Get-ADUser -Filter * -SearchBase $p -Properties Name, SamAccountName, Enabled |
-                Select-Object Name, SamAccountName, Enabled
-            } -ArgumentList $ouPath
-            $users | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
-            Write-Status "Exportado para $file." Green
-        }
-        catch { Write-Err "$_" }
+    Write-Host ""
+    Write-Host "  [1] Todos os usuários do domínio"
+    Write-Host "  [2] Filtrar por OU"
+    Write-Host ""
+    $opt = Read-Host "  Selecione"
+
+    $ouPath = $null
+    if ($opt -eq '2') {
+        Write-Info "Buscando OUs disponíveis..."
+        $ouPath = Select-ADOUDynamic "  Selecione a OU"
+        if (-not $ouPath) { return }
     }
+
+    $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
+    $dest = "$env:USERPROFILE\Desktop\usuarios_$ts.csv"
+    $file = Read-Host "  Arquivo de saída (Enter = Desktop\usuarios_$ts.csv)"
+    if ([string]::IsNullOrWhiteSpace($file)) { $file = $dest }
+
+    try {
+        $users = Invoke-Command -Session $script:adSession -ScriptBlock {
+            param($p)
+            $filter = if ($p) {
+                Get-ADUser -Filter * -SearchBase $p -Properties DisplayName, SamAccountName, EmailAddress, Title, Department, Enabled, LastLogonDate
+            } else {
+                Get-ADUser -Filter * -Properties DisplayName, SamAccountName, EmailAddress, Title, Department, Enabled, LastLogonDate
+            }
+            $filter | Select-Object DisplayName, SamAccountName, EmailAddress, Title, Department, Enabled, LastLogonDate |
+                Sort-Object DisplayName
+        } -ArgumentList $ouPath
+
+        @($users) | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
+        Write-Status "Exportado $(@($users).Count) usuário(s) para: $file" Green
+    }
+    catch { Write-Err "Erro: $_" }
 }
 
 function AD-ExportComputers {
-    $ouPath = Select-ADOU
-    $file = Read-Host "  Arquivo de saída (ex: computadores.csv)"
-    if ($ouPath) {
-        try {
-            $computers = Invoke-Command -Session $script:adSession -ScriptBlock {
-                param($p) Get-ADComputer -Filter * -SearchBase $p -Properties Name, Enabled, LastLogonDate |
-                Select-Object Name, Enabled, LastLogonDate
-            } -ArgumentList $ouPath
-            $computers | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
-            Write-Status "Exportado para $file." Green
-        }
-        catch { Write-Err "$_" }
+    Write-Host ""
+    Write-Host "  [1] Todos os computadores do domínio"
+    Write-Host "  [2] Filtrar por OU"
+    Write-Host ""
+    $opt = Read-Host "  Selecione"
+
+    $ouPath = $null
+    if ($opt -eq '2') {
+        Write-Info "Buscando OUs disponíveis..."
+        $ouPath = Select-ADOUDynamic "  Selecione a OU"
+        if (-not $ouPath) { return }
     }
+
+    $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
+    $dest = "$env:USERPROFILE\Desktop\computadores_$ts.csv"
+    $file = Read-Host "  Arquivo de saída (Enter = Desktop\computadores_$ts.csv)"
+    if ([string]::IsNullOrWhiteSpace($file)) { $file = $dest }
+
+    try {
+        $computers = Invoke-Command -Session $script:adSession -ScriptBlock {
+            param($p)
+            $filter = if ($p) {
+                Get-ADComputer -Filter * -SearchBase $p -Properties Name, DNSHostName, Enabled, LastLogonDate, OperatingSystem
+            } else {
+                Get-ADComputer -Filter * -Properties Name, DNSHostName, Enabled, LastLogonDate, OperatingSystem
+            }
+            $filter | Select-Object Name, DNSHostName, OperatingSystem, Enabled, LastLogonDate |
+                Sort-Object Name
+        } -ArgumentList $ouPath
+
+        @($computers) | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
+        Write-Status "Exportado $(@($computers).Count) computador(es) para: $file" Green
+    }
+    catch { Write-Err "Erro: $_" }
 }
 
 function AD-ExportGroups {
-    $setor = Read-Host "  Setor (ex: T.I, RH)"
-    $ouPath = "OU=Grupos,OU=$setor,OU=Departamentos,$($script:adBaseDN)"
-    $file = Read-Host "  Arquivo de saída (ex: grupos.csv)"
+    Write-Host ""
+    Write-Host "  [1] Todos os grupos do domínio"
+    Write-Host "  [2] Filtrar por OU"
+    Write-Host ""
+    $opt = Read-Host "  Selecione"
+
+    $ouPath = $null
+    if ($opt -eq '2') {
+        Write-Info "Buscando OUs disponíveis..."
+        $ouPath = Select-ADOUDynamic "  Selecione a OU"
+        if (-not $ouPath) { return }
+    }
+
+    $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
+    $dest = "$env:USERPROFILE\Desktop\grupos_$ts.csv"
+    $file = Read-Host "  Arquivo de saída (Enter = Desktop\grupos_$ts.csv)"
+    if ([string]::IsNullOrWhiteSpace($file)) { $file = $dest }
+
     try {
         $groups = Invoke-Command -Session $script:adSession -ScriptBlock {
-            param($p) Get-ADGroup -Filter * -SearchBase $p -Properties Name, SamAccountName, GroupCategory, GroupScope |
-            Select-Object Name, SamAccountName, GroupCategory, GroupScope
+            param($p)
+            $filter = if ($p) {
+                Get-ADGroup -Filter * -SearchBase $p -Properties Name, SamAccountName, GroupCategory, GroupScope, Description
+            } else {
+                Get-ADGroup -Filter * -Properties Name, SamAccountName, GroupCategory, GroupScope, Description
+            }
+            $filter | Select-Object Name, SamAccountName, GroupCategory, GroupScope, Description |
+                Sort-Object Name
         } -ArgumentList $ouPath
-        $groups | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
-        Write-Status "Exportado para $file." Green
+
+        @($groups) | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
+        Write-Status "Exportado $(@($groups).Count) grupo(s) para: $file" Green
     }
-    catch { Write-Err "$_" }
+    catch { Write-Err "Erro: $_" }
 }
 
 function Manage-AD {
@@ -942,50 +1045,46 @@ function Manage-AD {
         Write-Host "   [4]  Deletar usuário"
         Write-Host "   [5]  Resetar senha"
         Write-Host "   [6]  Desbloquear usuário"
-        Write-Host "   [7]  Alterar ramal"
-        Write-Host "   [8]  Alterar atributo"
-        Write-Host "   [9]  Listar usuários"
+        Write-Host "   [7]  Listar usuários"
         Write-Host "  -- Computadores --" -ForegroundColor DarkCyan
-        Write-Host "  [10]  Adicionar computador"
-        Write-Host "  [11]  Remover computador"
-        Write-Host "  [12]  Listar computadores"
+        Write-Host "   [8]  Adicionar computador"
+        Write-Host "   [9]  Remover computador"
+        Write-Host "  [10]  Listar computadores"
         Write-Host "  -- Grupos --" -ForegroundColor DarkCyan
-        Write-Host "  [13]  Adicionar usuário a grupo"
-        Write-Host "  [14]  Remover usuário de grupo"
-        Write-Host "  [15]  Ver membros de grupo"
+        Write-Host "  [11]  Adicionar usuário a grupo"
+        Write-Host "  [12]  Remover usuário de grupo"
+        Write-Host "  [13]  Ver membros de grupo"
         Write-Host "  -- Outros --" -ForegroundColor DarkCyan
-        Write-Host "  [16]  Mover objeto para outra OU"
-        Write-Host "  [17]  Sincronizar AD"
-        Write-Host "  [18]  Exportar relatório de usuários"
-        Write-Host "  [19]  Exportar relatório de computadores"
-        Write-Host "  [20]  Exportar relatório de grupos"
+        Write-Host "  [14]  Mover objeto para outra OU"
+        Write-Host "  [15]  Sincronizar AD"
+        Write-Host "  [16]  Exportar relatório de usuários"
+        Write-Host "  [17]  Exportar relatório de computadores"
+        Write-Host "  [18]  Exportar relatório de grupos"
         Write-Host "   [0]  Voltar ao menu principal" -ForegroundColor Red
         Write-Host "  ==============================================" -ForegroundColor Cyan
         Write-Host ""
 
         $adChoice = Read-Host "  Selecione"
         switch ($adChoice) {
-            '1' { AD-CreateUser }
-            '2' { AD-DisableUser }
-            '3' { AD-EnableUser }
-            '4' { AD-DeleteUser }
-            '5' { AD-ResetPassword }
-            '6' { AD-UnlockUser }
-            '7' { AD-ChangeExtension }
-            '8' { AD-SetUserAttribute }
-            '9' { AD-ListUsers }
-            '10' { AD-AddComputer }
-            '11' { AD-RemoveComputer }
-            '12' { AD-ListComputers }
-            '13' { AD-AddUserToGroup }
-            '14' { AD-RemoveUserFromGroup }
-            '15' { AD-GetGroupMembers }
-            '16' { AD-MoveObject }
-            '17' { AD-SyncAD }
-            '18' { AD-ExportUsers }
-            '19' { AD-ExportComputers }
-            '20' { AD-ExportGroups }
-            '0' { Disconnect-ADSession; break }
+            '1'  { AD-CreateUser }
+            '2'  { AD-DisableUser }
+            '3'  { AD-EnableUser }
+            '4'  { AD-DeleteUser }
+            '5'  { AD-ResetPassword }
+            '6'  { AD-UnlockUser }
+            '7'  { AD-ListUsers }
+            '8'  { AD-AddComputer }
+            '9'  { AD-RemoveComputer }
+            '10' { AD-ListComputers }
+            '11' { AD-AddUserToGroup }
+            '12' { AD-RemoveUserFromGroup }
+            '13' { AD-GetGroupMembers }
+            '14' { AD-MoveObject }
+            '15' { AD-SyncAD }
+            '16' { AD-ExportUsers }
+            '17' { AD-ExportComputers }
+            '18' { AD-ExportGroups }
+            '0'  { Disconnect-ADSession; break }
             default { Write-Err "Opção inválida." }
         }
 
