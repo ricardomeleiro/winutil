@@ -43,7 +43,7 @@ function Install-WingetLatest {
         $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest"
         $msixBundle = $releases.assets | Where-Object { $_.name -like "*.msixbundle" } | Select-Object -First 1
         $vcLibs = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
-        $uiXaml  = ($releases.assets | Where-Object { $_.name -like "*.appx" -and $_.name -like "*UIXaml*" } | Select-Object -First 1)
+        $uiXaml = ($releases.assets | Where-Object { $_.name -like "*.appx" -and $_.name -like "*UIXaml*" } | Select-Object -First 1)
 
         $tmpDir = "$env:TEMP\winget-install"
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -65,7 +65,8 @@ function Install-WingetLatest {
 
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         Write-Status "Winget installed successfully." Green
-    } catch {
+    }
+    catch {
         Write-Warning "Automatic install failed: $_"
         Write-Info "Opening Microsoft Store as fallback..."
         Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
@@ -84,14 +85,14 @@ function Check-Winget {
     }
 
     # Check if winget version is outdated (minimum v1.6)
-    $wingetVersion = (winget --version) -replace 'v',''
+    $wingetVersion = (winget --version) -replace 'v', ''
     $major = [int]($wingetVersion.Split('.')[0])
     $minor = [int]($wingetVersion.Split('.')[1])
 
     if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 6)) {
         Write-Info "Winget version $wingetVersion is outdated. Updating automatically..."
         Install-WingetLatest
-        $wingetVersion = (winget --version) -replace 'v',''
+        $wingetVersion = (winget --version) -replace 'v', ''
     }
 
     Write-Status "Winget v$wingetVersion detected." Green
@@ -108,7 +109,7 @@ function Fix-WingetCertificate {
     $wingetCache = "$localAppData\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\Microsoft.Winget.Source_8wekyb3d8bbwe"
     $wingetCache2 = "$localAppData\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\Microsoft.Winget.MSStore.Source_8wekyb3d8bbwe"
 
-    if (Test-Path $wingetCache)  { Remove-Item $wingetCache  -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $wingetCache) { Remove-Item $wingetCache  -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path $wingetCache2) { Remove-Item $wingetCache2 -Recurse -Force -ErrorAction SilentlyContinue }
     Write-Info "Winget cache cleared."
 
@@ -225,10 +226,10 @@ $Apps = [ordered]@{
         @{Name = "PowerToys"; WinGet = "Microsoft.PowerToys" }
     )
     "Security"      = @(
-    @{Name = "Malwarebytes"; WinGet = "Malwarebytes.Malwarebytes" },
-    @{Name = "Bitwarden"; WinGet = "Bitwarden.Bitwarden" },
-    @{Name = "WireGuard"; WinGet = "WireGuard.WireGuard" },
-    @{Name = "Wazuh Agent"; WinGet = "Wazuh.WazuhAgent" }
+        @{Name = "Malwarebytes"; WinGet = "Malwarebytes.Malwarebytes" },
+        @{Name = "Bitwarden"; WinGet = "Bitwarden.Bitwarden" },
+        @{Name = "WireGuard"; WinGet = "WireGuard.WireGuard" },
+        @{Name = "Wazuh Agent"; WinGet = "Wazuh.WazuhAgent" }
     )
 }
 
@@ -535,7 +536,7 @@ function Connect-ADSession {
     Write-Host "     AUTENTICAÇÃO NO CONTROLADOR DE DOMÍNIO    " -ForegroundColor Yellow
     Write-Host "  ==============================================" -ForegroundColor Cyan
 
-    $adminUser = "Administrator"
+    $adminUser = "chouest-br.local\Administrator"
     $adminPass = Read-Host "  Digite a senha do Administrador ($adminUser)" -AsSecureString
     $cred = New-Object System.Management.Automation.PSCredential($adminUser, $adminPass)
 
