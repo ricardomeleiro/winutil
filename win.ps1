@@ -786,17 +786,71 @@ function AD-SetUserAttribute {
 }
 
 function AD-ListUsers {
-    $ouPath = Select-ADOU
-    if ($ouPath) {
-        try {
+    Write-Host ""
+    Write-Host "  -- Listar Usuários --" -ForegroundColor Cyan
+    Write-Host "  [1] Todos os usuários do domínio"
+    Write-Host "  [2] Buscar por nome ou login"
+    Write-Host "  [3] Filtrar por OU"
+    Write-Host ""
+    $opt = Read-Host "  Selecione"
+
+    try {
+        $users = $null
+
+        if ($opt -eq '1') {
+            Write-Info "Buscando todos os usuários do domínio..."
             $users = Invoke-Command -Session $script:adSession -ScriptBlock {
-                param($p) Get-ADUser -Filter * -SearchBase $p -Properties Name, SamAccountName, Enabled |
-                Select-Object Name, SamAccountName, Enabled
-            } -ArgumentList $ouPath
-            $users | Format-Table -AutoSize
+                Get-ADUser -Filter * -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Sort-Object DisplayName
+            }
         }
-        catch { Write-Err "$_" }
+        elseif ($opt -eq '2') {
+            $termo = Read-Host "  Nome ou login (parcial, ex: joao)"
+            Write-Info "Buscando '$termo'..."
+            $users = Invoke-Command -Session $script:adSession -ScriptBlock {
+                param($t)
+                Get-ADUser -Filter { (Name -like $t) -or (SamAccountName -like $t) } `
+                    -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Sort-Object DisplayName
+            } -ArgumentList "*$termo*"
+        }
+        elseif ($opt -eq '3') {
+            $ouPath = Select-ADOU
+            if (-not $ouPath) { return }
+            Write-Info "Buscando usuários em '$ouPath'..."
+            $users = Invoke-Command -Session $script:adSession -ScriptBlock {
+                param($p)
+                Get-ADUser -Filter * -SearchBase $p -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
+                    Sort-Object DisplayName
+            } -ArgumentList $ouPath
+        }
+        else {
+            Write-Err "Opção inválida."; return
+        }
+
+        $list = @($users)
+        if ($list.Count -eq 0) { Write-Info "Nenhum usuário encontrado."; return }
+
+        Write-Host ""
+        Write-Host ("  {0,-32} {1,-22} {2,-36} {3,-8} {4}" -f "Nome", "Login", "E-mail", "Status", "Último logon") -ForegroundColor DarkCyan
+        Write-Host "  $('-' * 110)" -ForegroundColor DarkGray
+
+        foreach ($u in $list) {
+            $status = if ($u.Enabled) { "Ativo" } else { "Inativo" }
+            $color  = if ($u.Enabled) { "White" } else { "DarkGray" }
+            $logon  = if ($u.LastLogonDate) { $u.LastLogonDate.ToString("dd/MM/yyyy") } else { "Nunca" }
+            $nome   = if ($u.DisplayName)   { $u.DisplayName }   else { $u.SamAccountName }
+            Write-Host ("  {0,-32} {1,-22} {2,-36} {3,-8} {4}" -f `
+                $nome, $u.SamAccountName, $u.EmailAddress, $status, $logon) -ForegroundColor $color
+        }
+
+        Write-Host ""
+        Write-Host "  Total: $($list.Count) usuário(s)" -ForegroundColor Yellow
     }
+    catch { Write-Err "Erro ao listar usuários: $_" }
 }
 
 function AD-ListComputers {
