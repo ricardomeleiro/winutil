@@ -539,19 +539,39 @@ function Connect-ADSession {
     Write-Host ""
 
     $script:adDomain = Read-Host "  Domínio (ex: empresa.local)"
-    $script:adDC     = Read-Host "  Controlador de Domínio (IP ou hostname)"
-    $script:adUser   = Read-Host "  Usuário administrador (ex: Administrator)"
 
-    # Deriva o BaseDN automaticamente a partir do domínio (ex: empresa.local -> DC=empresa,DC=local)
+    # Valida IP do DC
+    do {
+        $script:adDC = Read-Host "  IP do Controlador de Domínio (ex: 10.0.0.1)"
+        $validIP = $script:adDC -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -and
+                   ($script:adDC -split '\.' | ForEach-Object { [int]$_ -ge 0 -and [int]$_ -le 255 }) -notcontains $false
+        if (-not $validIP) { Write-Err "Endereço IP inválido. Use o formato: 10.0.0.1" }
+    } while (-not $validIP)
+
+    $script:adUser = Read-Host "  Usuário administrador (ex: Administrator)"
+
+    # Deriva BaseDN automaticamente (ex: empresa.local -> DC=empresa,DC=local)
     $script:adBaseDN = "DC=" + ($script:adDomain.Replace('.', ',DC='))
 
     $adminPass = Read-Host "  Senha" -AsSecureString
     $cred = New-Object System.Management.Automation.PSCredential("$($script:adDomain)\$($script:adUser)", $adminPass)
 
     try {
-        Set-Item WSMan:\localhost\Client\TrustedHosts -Value $script:adDC -Force -ErrorAction Stop
+        # Garante que o WinRM está rodando antes de usar WSMan:\
+        $winrm = Get-Service WinRM -ErrorAction SilentlyContinue
+        if ($winrm -and $winrm.Status -ne 'Running') {
+            Write-Info "Iniciando serviço WinRM..."
+            Start-Service WinRM -ErrorAction Stop
+            Start-Sleep -Seconds 2
+        }
 
-        # -Authentication Negotiate usa NTLM quando Kerberos não funciona (ex: conexão via IP)
+        # Adiciona o DC ao TrustedHosts se ainda não estiver
+        $trusted = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+        if ([string]::IsNullOrEmpty($trusted) -or $trusted -notlike "*$($script:adDC)*") {
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $script:adDC -Force -ErrorAction Stop
+        }
+
+        # Negotiate usa NTLM quando Kerberos não funciona (conexão via IP)
         $script:adSession = New-PSSession -ComputerName $script:adDC -Credential $cred -Authentication Negotiate -ErrorAction Stop
         Invoke-Command -Session $script:adSession -ScriptBlock { Import-Module ActiveDirectory } -ErrorAction Stop
         $script:adConnected = $true
