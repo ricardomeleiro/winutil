@@ -435,16 +435,72 @@ function Run-Repairs {
 function Join-DomainHelper {
     param($domainName)
     $prefix = $domainName.Split('.')[0].ToUpper()
-    $user = Read-Host "  Admin username (e.g. $prefix\Administrator)"
-    $pass = Read-Host "  Password" -AsSecureString
+
+    Write-Host ""
+
+    # 1. Configurar DNS apontando para o DC (necessário para resolver o domínio)
+    $dcIP = Read-Host "  IP do Controlador de Domínio (necessário para DNS)"
+    if (-not [string]::IsNullOrWhiteSpace($dcIP)) {
+        try {
+            $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+            if ($adapter) {
+                Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses $dcIP -ErrorAction Stop
+                Write-Status "DNS configurado para $dcIP na interface '$($adapter.Name)'." Green
+                Start-Sleep -Seconds 3
+            }
+        }
+        catch { Write-Info "Não foi possível configurar DNS automaticamente: $_" }
+    }
+
+    # 2. Verificar conectividade com o domínio
+    Write-Info "Verificando conectividade com '$domainName'..."
+    $reachable = Test-Connection -ComputerName $domainName -Count 2 -Quiet -ErrorAction SilentlyContinue
+    if (-not $reachable) {
+        Write-Err "Não foi possível resolver/alcançar '$domainName'."
+        Write-Info "Verifique se o DNS está correto e se há rota de rede para o DC."
+        if (-not (Confirm-Action "Tentar ingressar mesmo assim?")) { return }
+    }
+
+    # 3. Credenciais
+    $user = Read-Host "  Usuário admin do domínio (ex: $prefix\Administrator)"
+    $pass = Read-Host "  Senha" -AsSecureString
     $cred = New-Object System.Management.Automation.PSCredential($user, $pass)
+
+    # 4. OU de destino (opcional)
+    $ouPath = Read-Host "  OU de destino (deixe vazio para usar 'Computers' padrão)"
+
     try {
-        Add-Computer -DomainName $domainName -Credential $cred -Force
-        Write-Status "Successfully joined domain '$domainName'. Please reboot." Green
-        if (Confirm-Action "Reboot now?") { Restart-Computer -Force }
+        $params = @{
+            DomainName  = $domainName
+            Credential  = $cred
+            Force       = $true
+            ErrorAction = 'Stop'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ouPath)) { $params['OUPath'] = $ouPath }
+
+        Write-Info "Ingressando no domínio '$domainName'..."
+        Add-Computer @params
+
+        # 5. Verificar se o ingresso foi registrado (fica pendente até reiniciar)
+        $pending = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+                       -Name "Domain" -ErrorAction SilentlyContinue
+        if ($pending.Domain -like "*$($domainName.Split('.')[0])*") {
+            Write-Status "Ingresso no domínio '$domainName' confirmado! Reinicialize para aplicar." Green
+        } else {
+            Write-Status "Comando concluído sem erros. Reinicialize para verificar o ingresso." Green
+        }
+
+        if (Confirm-Action "Reiniciar agora?") { Restart-Computer -Force }
     }
     catch {
-        Write-Err "Failed to join domain '$domainName': $_"
+        Write-Err "Falha ao ingressar no domínio '$domainName':"
+        Write-Err "$_"
+        Write-Host ""
+        Write-Info "Causas comuns:"
+        Write-Host "   - DNS não aponta para o DC do domínio" -ForegroundColor DarkYellow
+        Write-Host "   - Credenciais incorretas ou sem permissão" -ForegroundColor DarkYellow
+        Write-Host "   - Computador não alcança o DC na rede"    -ForegroundColor DarkYellow
+        Write-Host "   - Nome do computador já existe no AD"     -ForegroundColor DarkYellow
     }
 }
 
