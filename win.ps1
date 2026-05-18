@@ -538,44 +538,48 @@ function Connect-ADSession {
     Write-Host "  ==============================================" -ForegroundColor Cyan
     Write-Host ""
 
-    $script:adDomain = Read-Host "  Domínio (ex: empresa.local)"
+    $script:adDomain = [string](Read-Host "  Domínio (ex: empresa.local)")
 
     # Valida IP do DC
     do {
-        $script:adDC = Read-Host "  IP do Controlador de Domínio (ex: 10.0.0.1)"
-        $validIP = $script:adDC -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -and
-                   ($script:adDC -split '\.' | ForEach-Object { [int]$_ -ge 0 -and [int]$_ -le 255 }) -notcontains $false
+        $inputDC = [string](Read-Host "  IP do Controlador de Domínio (ex: 10.0.0.1)")
+        $validIP = $false
+        if ($inputDC -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+            $badOctet = $inputDC -split '\.' | Where-Object { [int]$_ -gt 255 }
+            $validIP  = ($null -eq $badOctet -or @($badOctet).Count -eq 0)
+        }
         if (-not $validIP) { Write-Err "Endereço IP inválido. Use o formato: 10.0.0.1" }
     } while (-not $validIP)
+    $script:adDC = $inputDC
 
-    $script:adUser = Read-Host "  Usuário administrador (ex: Administrator)"
+    $script:adUser   = [string](Read-Host "  Usuário administrador (ex: Administrator)")
 
     # Deriva BaseDN automaticamente (ex: empresa.local -> DC=empresa,DC=local)
     $script:adBaseDN = "DC=" + ($script:adDomain.Replace('.', ',DC='))
 
     $adminPass = Read-Host "  Senha" -AsSecureString
-    $cred = New-Object System.Management.Automation.PSCredential("$($script:adDomain)\$($script:adUser)", $adminPass)
+    $cred = New-Object System.Management.Automation.PSCredential(
+        "$($script:adDomain)\$($script:adUser)", $adminPass)
 
     try {
-        # Garante que o WinRM está rodando antes de usar WSMan:\
-        $winrm = Get-Service WinRM -ErrorAction SilentlyContinue
-        if ($winrm -and $winrm.Status -ne 'Running') {
-            Write-Info "Iniciando serviço WinRM..."
-            Start-Service WinRM -ErrorAction Stop
-            Start-Sleep -Seconds 2
-        }
+        # Habilita e configura WinRM de uma vez (inicia serviço + firewall + TrustedHosts)
+        Write-Info "Configurando WinRM..."
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction SilentlyContinue 2>&1 | Out-Null
 
-        # Adiciona o DC ao TrustedHosts se ainda não estiver
-        $trusted = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
-        if ([string]::IsNullOrEmpty($trusted) -or $trusted -notlike "*$($script:adDC)*") {
-            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $script:adDC -Force -ErrorAction Stop
-        }
+        # Usa variável local tipada como string para evitar Object[] no WSMan
+        [string]$dcStr = $script:adDC
+        Set-Item WSMan:\localhost\Client\TrustedHosts -Value $dcStr -Force -ErrorAction SilentlyContinue
 
+        Write-Info "Conectando ao DC $dcStr..."
         # Negotiate usa NTLM quando Kerberos não funciona (conexão via IP)
-        $script:adSession = New-PSSession -ComputerName $script:adDC -Credential $cred -Authentication Negotiate -ErrorAction Stop
+        $script:adSession = New-PSSession `
+            -ComputerName $dcStr `
+            -Credential   $cred  `
+            -Authentication Negotiate `
+            -ErrorAction Stop
         Invoke-Command -Session $script:adSession -ScriptBlock { Import-Module ActiveDirectory } -ErrorAction Stop
         $script:adConnected = $true
-        Write-Status "Conectado ao DC $($script:adDC) ($($script:adDomain)) com sucesso." Green
+        Write-Status "Conectado ao DC $dcStr ($($script:adDomain)) com sucesso." Green
         return $true
     }
     catch {
