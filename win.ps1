@@ -523,9 +523,10 @@ function Manage-Domain {
 
 # AD connection variables (set when user enters this section)
 $adSession = $null
-$adDomain = "CHOUEST-BR.local"
-$adBaseDN = "DC=RIO-ADDS,DC=chouest-br,DC=local"
-$adDC = "10.131.0.11"
+$adDomain = ""
+$adBaseDN = ""
+$adDC = ""
+$adUser = ""
 $adConnected = $false
 
 function Connect-ADSession {
@@ -535,19 +536,25 @@ function Connect-ADSession {
     Write-Host "  ==============================================" -ForegroundColor Cyan
     Write-Host "     AUTENTICAÇÃO NO CONTROLADOR DE DOMÍNIO    " -ForegroundColor Yellow
     Write-Host "  ==============================================" -ForegroundColor Cyan
+    Write-Host ""
 
-    $adminUser = "chouest-br.local\Administrator"
-    $adminPass = Read-Host "  Digite a senha do Administrador ($adminUser)" -AsSecureString
-    $cred = New-Object System.Management.Automation.PSCredential($adminUser, $adminPass)
+    $script:adDomain = Read-Host "  Domínio (ex: empresa.local)"
+    $script:adDC     = Read-Host "  Controlador de Domínio (IP ou hostname)"
+    $script:adUser   = Read-Host "  Usuário administrador (ex: Administrator)"
+
+    # Deriva o BaseDN automaticamente a partir do domínio
+    $script:adBaseDN = ($script:adDomain -split '\.' | ForEach-Object { "DC=$_" }) -join ','
+
+    $adminPass = Read-Host "  Senha" -AsSecureString
+    $cred = New-Object System.Management.Automation.PSCredential("$($script:adDomain)\$($script:adUser)", $adminPass)
 
     try {
-        $originalTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
         Set-Item WSMan:\localhost\Client\TrustedHosts -Value $script:adDC -Force -ErrorAction Stop
 
         $script:adSession = New-PSSession -ComputerName $script:adDC -Credential $cred -ErrorAction Stop
         Invoke-Command -Session $script:adSession -ScriptBlock { Import-Module ActiveDirectory } -ErrorAction Stop
         $script:adConnected = $true
-        Write-Status "Conectado ao DC $($script:adDC) com sucesso." Green
+        Write-Status "Conectado ao DC $($script:adDC) ($($script:adDomain)) com sucesso." Green
         return $true
     }
     catch {
@@ -847,7 +854,7 @@ function Manage-AD {
         Write-Host "  ==============================================" -ForegroundColor Cyan
         Write-Host "         GERENCIAMENTO DO ACTIVE DIRECTORY      " -ForegroundColor Yellow
         Write-Host "  ==============================================" -ForegroundColor Cyan
-        Write-Host "  Domínio: $adDomain  |  DC: $adDC" -ForegroundColor Green
+        Write-Host "  Domínio: $($script:adDomain)  |  DC: $($script:adDC)  |  Usuário: $($script:adUser)" -ForegroundColor Green
         Write-Host "  ----------------------------------------------"
         Write-Host "  -- Usuários --" -ForegroundColor DarkCyan
         Write-Host "   [1]  Criar usuário"
