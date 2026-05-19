@@ -881,60 +881,92 @@ function AD-ListUsers {
     Write-Host ""
     $opt = Read-Host "  Selecione"
 
+    # ScriptBlock reutilizável: busca usuários + grupos em uma única chamada remota
+    $fetchBlock = {
+        param($filter, $searchBase)
+        $props = 'DisplayName','SamAccountName','EmailAddress','Enabled','LastLogonDate','MemberOf'
+        $params = @{ Filter = $filter; Properties = $props }
+        if ($searchBase) { $params['SearchBase'] = $searchBase }
+        Get-ADUser @params | Sort-Object DisplayName | ForEach-Object {
+            $groups = @($_.MemberOf) |
+                ForEach-Object { ($_ -split ',')[0] -replace '^CN=','' } |
+                Sort-Object
+            [PSCustomObject]@{
+                DisplayName    = $_.DisplayName
+                SamAccountName = $_.SamAccountName
+                EmailAddress   = $_.EmailAddress
+                Enabled        = $_.Enabled
+                LastLogonDate  = $_.LastLogonDate
+                Groups         = $groups
+            }
+        }
+    }
+
     try {
         $users = $null
 
         if ($opt -eq '1') {
             Write-Info "Buscando todos os usuários do domínio..."
-            $users = Invoke-Command -Session $script:adSession -ScriptBlock {
-                Get-ADUser -Filter * -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Sort-Object DisplayName
-            }
+            $users = Invoke-Command -Session $script:adSession -ScriptBlock $fetchBlock `
+                -ArgumentList '*', $null
         }
         elseif ($opt -eq '2') {
             $termo = Read-Host "  Nome ou login (parcial, ex: joao)"
             Write-Info "Buscando '$termo'..."
             $users = Invoke-Command -Session $script:adSession -ScriptBlock {
                 param($t)
+                $props = 'DisplayName','SamAccountName','EmailAddress','Enabled','LastLogonDate','MemberOf'
                 Get-ADUser -Filter { (Name -like $t) -or (SamAccountName -like $t) } `
-                    -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Sort-Object DisplayName
+                    -Properties $props | Sort-Object DisplayName | ForEach-Object {
+                    $groups = @($_.MemberOf) |
+                        ForEach-Object { ($_ -split ',')[0] -replace '^CN=','' } |
+                        Sort-Object
+                    [PSCustomObject]@{
+                        DisplayName    = $_.DisplayName
+                        SamAccountName = $_.SamAccountName
+                        EmailAddress   = $_.EmailAddress
+                        Enabled        = $_.Enabled
+                        LastLogonDate  = $_.LastLogonDate
+                        Groups         = $groups
+                    }
+                }
             } -ArgumentList "*$termo*"
         }
         elseif ($opt -eq '3') {
-            $ouPath = Select-ADOU
+            Write-Info "Buscando OUs disponíveis..."
+            $ouPath = Select-ADOUDynamic "  Selecione a OU"
             if (-not $ouPath) { return }
             Write-Info "Buscando usuários em '$ouPath'..."
-            $users = Invoke-Command -Session $script:adSession -ScriptBlock {
-                param($p)
-                Get-ADUser -Filter * -SearchBase $p -Properties DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Select-Object DisplayName, SamAccountName, EmailAddress, Enabled, LastLogonDate |
-                    Sort-Object DisplayName
-            } -ArgumentList $ouPath
+            $users = Invoke-Command -Session $script:adSession -ScriptBlock $fetchBlock `
+                -ArgumentList '*', $ouPath
         }
-        else {
-            Write-Err "Opção inválida."; return
-        }
+        else { Write-Err "Opção inválida."; return }
 
         $list = @($users)
         if ($list.Count -eq 0) { Write-Info "Nenhum usuário encontrado."; return }
 
         Write-Host ""
-        Write-Host ("  {0,-32} {1,-22} {2,-36} {3,-8} {4}" -f "Nome", "Login", "E-mail", "Status", "Último logon") -ForegroundColor DarkCyan
-        Write-Host "  $('-' * 110)" -ForegroundColor DarkGray
+        Write-Host "  $('=' * 100)" -ForegroundColor DarkCyan
 
         foreach ($u in $list) {
-            $status = if ($u.Enabled) { "Ativo" } else { "Inativo" }
-            $color  = if ($u.Enabled) { "White" } else { "DarkGray" }
+            $status = if ($u.Enabled) { "Ativo  " } else { "Inativo" }
+            $color  = if ($u.Enabled) { "White" }   else { "DarkGray" }
             $logon  = if ($u.LastLogonDate) { $u.LastLogonDate.ToString("dd/MM/yyyy") } else { "Nunca" }
-            $nome   = if ($u.DisplayName)   { $u.DisplayName }   else { $u.SamAccountName }
-            Write-Host ("  {0,-32} {1,-22} {2,-36} {3,-8} {4}" -f `
+            $nome   = if ($u.DisplayName)   { $u.DisplayName } else { $u.SamAccountName }
+
+            Write-Host ("  {0,-30} {1,-22} {2,-34} {3}  Logon: {4}" -f `
                 $nome, $u.SamAccountName, $u.EmailAddress, $status, $logon) -ForegroundColor $color
+
+            $grps = @($u.Groups)
+            if ($grps.Count -gt 0) {
+                Write-Host ("    └─ Grupos ({0}): {1}" -f $grps.Count, ($grps -join ' | ')) `
+                    -ForegroundColor DarkYellow
+            } else {
+                Write-Host "    └─ Grupos: nenhum" -ForegroundColor DarkGray
+            }
         }
 
-        Write-Host ""
+        Write-Host "  $('=' * 100)" -ForegroundColor DarkCyan
         Write-Host "  Total: $($list.Count) usuário(s)" -ForegroundColor Yellow
     }
     catch { Write-Err "Erro ao listar usuários: $_" }
