@@ -1190,6 +1190,8 @@ function Manage-AD {
 
 $spTenantUrl  = ""
 $spConnected  = $false
+# PnP Management Shell — public multi-tenant app, no custom registration needed
+$spClientId   = "31359c7f-bd7e-475c-86db-fdb8c937548e"
 
 function Ensure-PnPModule {
     if (Get-Module -ListAvailable -Name 'PnP.PowerShell') {
@@ -1210,20 +1212,37 @@ function Ensure-PnPModule {
     }
 }
 
+function SP-NormalizeAdminUrl {
+    param([string]$url)
+    # Strip trailing slashes, colons, path segments
+    $url = $url.TrimEnd('/', '\', ':').Trim()
+    if ($url -match '^(https?://[^/]+)') { $url = $Matches[1] }
+    # Convert root tenant URL to admin URL  (https://tenant.sharepoint.com → https://tenant-admin.sharepoint.com)
+    if ($url -match '^https://([^-][^.]+)\.sharepoint\.com$') {
+        $url = "https://$($Matches[1])-admin.sharepoint.com"
+    }
+    return $url
+}
+
 function SP-Connect {
     if ($script:spConnected) { return $true }
     Write-Host ""
-    $script:spTenantUrl = Read-Host "  SharePoint Admin URL (e.g. https://contoso-admin.sharepoint.com)"
-    if ([string]::IsNullOrWhiteSpace($script:spTenantUrl)) { Write-Err "URL cannot be empty."; return $false }
+    Write-Info "Enter any SharePoint URL from your tenant (the tool will derive the admin URL)."
+    $inputUrl = Read-Host "  SharePoint URL (e.g. https://cinnovation.sharepoint.com)"
+    if ([string]::IsNullOrWhiteSpace($inputUrl)) { Write-Err "URL cannot be empty."; return $false }
+    $script:spTenantUrl = SP-NormalizeAdminUrl $inputUrl
+    Write-Info "Admin URL: $($script:spTenantUrl)"
     Write-Info "A browser window will open for Microsoft login..."
     try {
-        Connect-PnPOnline -Url $script:spTenantUrl -Interactive -ErrorAction Stop
+        Connect-PnPOnline -Url $script:spTenantUrl -Interactive -ClientId $script:spClientId -ErrorAction Stop
         $script:spConnected = $true
         Write-Status "Connected to SharePoint Admin." Green
         return $true
     }
     catch {
         Write-Err "Connection failed: $_"
+        Write-Info "If this is your first time, a Global Admin may need to grant consent at:"
+        Write-Info "  https://login.microsoftonline.com/common/adminconsent?client_id=$($script:spClientId)"
         return $false
     }
 }
@@ -1279,7 +1298,8 @@ function SP-MirrorPermissions {
         Write-Host ("  [{0,$padWidth}/{1}] {2}" -f $siteIdx, $totalSites, $site.Url) -ForegroundColor DarkGray -NoNewline
 
         try {
-            Connect-PnPOnline -Url $site.Url -Interactive -ErrorAction Stop 2>$null
+            # Same ClientId → MSAL reuses cached token, no browser popup after first login
+            Connect-PnPOnline -Url $site.Url -Interactive -ClientId $script:spClientId -ErrorAction Stop 2>$null
         }
         catch {
             Write-Host " [connection failed]" -ForegroundColor DarkRed
