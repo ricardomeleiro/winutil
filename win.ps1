@@ -1241,8 +1241,7 @@ function SP-Connect {
     }
     catch {
         Write-Err "Connection failed: $_"
-        Write-Info "If this is your first time, a Global Admin may need to grant consent at:"
-        Write-Info "  https://login.microsoftonline.com/common/adminconsent?client_id=$($script:spClientId)"
+        Write-Info "First time? Use option [2] 'Grant PnP consent' from the SharePoint menu (Global Admin required)."
         return $false
     }
 }
@@ -1369,25 +1368,44 @@ function SP-MirrorPermissions {
     }
 }
 
+function SP-GrantConsent {
+    Write-Section "GRANT PNP MANAGEMENT SHELL CONSENT"
+    Write-Host ""
+    Write-Info "Registers the PnP Management Shell app in your Entra ID tenant."
+    Write-Info "Only needs to be done once. Requires a Global Administrator account."
+    Write-Host ""
+    if (-not (Confirm-Action "Open browser for Global Admin consent?")) { return }
+    try {
+        Register-PnPManagementShellAccess -ErrorAction Stop
+        Write-Status "Consent granted. You can now connect with option [1]." Green
+    }
+    catch { Write-Err "Failed: $_" }
+}
+
 function Manage-SharePoint {
     if (-not (Ensure-PnPModule)) { return }
-    if (-not (SP-Connect))       { return }
 
     do {
         Write-Host ""
         Write-Host "  ==============================================" -ForegroundColor Cyan
         Write-Host "         SHAREPOINT ACCESS MANAGEMENT           " -ForegroundColor Yellow
         Write-Host "  ==============================================" -ForegroundColor Cyan
-        Write-Host "  Tenant: $($script:spTenantUrl)" -ForegroundColor Green
+        if ($script:spConnected) {
+            Write-Host "  Tenant: $($script:spTenantUrl)" -ForegroundColor Green
+        } else {
+            Write-Host "  Status: Not connected" -ForegroundColor Yellow
+        }
         Write-Host "  ----------------------------------------------"
         Write-Host "  [1]  Mirror permissions (new hire onboarding)"
+        Write-Host "  [2]  First-time setup: grant PnP consent (Global Admin)" -ForegroundColor DarkYellow
         Write-Host "  [0]  Back to main menu" -ForegroundColor Red
         Write-Host "  ==============================================" -ForegroundColor Cyan
         Write-Host ""
 
         $spChoice = Read-Host "  Select"
         switch ($spChoice) {
-            '1'  { SP-MirrorPermissions }
+            '1'  { if (SP-Connect) { SP-MirrorPermissions } }
+            '2'  { SP-GrantConsent }
             '0'  { $script:spConnected = $false; Disconnect-PnPOnline -ErrorAction SilentlyContinue; break }
             default { Write-Err "Invalid option." }
         }
