@@ -1185,6 +1185,202 @@ function Manage-AD {
 }
 
 # -------------------------------------------
+#  8. SHAREPOINT ACCESS MANAGEMENT
+# -------------------------------------------
+
+$spTenantUrl  = ""
+$spConnected  = $false
+
+function Ensure-PnPModule {
+    if (Get-Module -ListAvailable -Name 'PnP.PowerShell') {
+        Import-Module PnP.PowerShell -ErrorAction SilentlyContinue
+        return $true
+    }
+    Write-Info "PnP.PowerShell not found. Installing from PSGallery..."
+    try {
+        Install-Module -Name PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Import-Module PnP.PowerShell -ErrorAction Stop
+        Write-Status "PnP.PowerShell installed." Green
+        return $true
+    }
+    catch {
+        Write-Err "Failed to install PnP.PowerShell: $_"
+        Write-Info "Manual install: Install-Module PnP.PowerShell -Scope CurrentUser"
+        return $false
+    }
+}
+
+function SP-Connect {
+    if ($script:spConnected) { return $true }
+    Write-Host ""
+    $script:spTenantUrl = Read-Host "  SharePoint Admin URL (e.g. https://contoso-admin.sharepoint.com)"
+    if ([string]::IsNullOrWhiteSpace($script:spTenantUrl)) { Write-Err "URL cannot be empty."; return $false }
+    Write-Info "A browser window will open for Microsoft login..."
+    try {
+        Connect-PnPOnline -Url $script:spTenantUrl -Interactive -ErrorAction Stop
+        $script:spConnected = $true
+        Write-Status "Connected to SharePoint Admin." Green
+        return $true
+    }
+    catch {
+        Write-Err "Connection failed: $_"
+        return $false
+    }
+}
+
+function SP-MirrorPermissions {
+    Write-Section "SHAREPOINT PERMISSION MIRROR"
+    Write-Host ""
+    Write-Info "Copies all SharePoint permissions from an existing employee to a new hire."
+    Write-Host ""
+
+    $sourceUPN = Read-Host "  Source employee UPN (mirror FROM, e.g. john.smith@contoso.com)"
+    $targetUPN = Read-Host "  New hire UPN        (mirror TO,   e.g. jane.doe@contoso.com)"
+
+    if ([string]::IsNullOrWhiteSpace($sourceUPN) -or [string]::IsNullOrWhiteSpace($targetUPN)) {
+        Write-Err "UPN cannot be empty."
+        return
+    }
+
+    $modeChoice = Read-Host "  Mode: [1] Apply permissions  [2] Preview only (no changes)"
+    $previewOnly = ($modeChoice -eq '2')
+    if ($previewOnly) { Write-Info "Preview mode — no changes will be made." }
+
+    Write-Host ""
+    Write-Info "Fetching all site collections (this may take a moment)..."
+
+    try {
+        $allSites = Get-PnPTenantSite -ErrorAction Stop | Where-Object {
+            $_.Template -ne 'RedirectSite#0' -and
+            $_.Template -ne 'SRCHCEN#0'      -and
+            $_.Url -notlike '*-my.sharepoint.com*'
+        }
+    }
+    catch {
+        Write-Err "Failed to fetch sites: $_"
+        return
+    }
+
+    $totalSites = @($allSites).Count
+    Write-Info "Found $totalSites site(s). Checking permissions for '$sourceUPN'..."
+
+    if ($totalSites -gt 50 -and -not $previewOnly) {
+        if (-not (Confirm-Action "$totalSites sites found — this may take several minutes. Continue?")) { return }
+    }
+
+    Write-Host ""
+
+    $results   = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $siteIdx   = 0
+    $padWidth  = ([string]$totalSites).Length
+
+    foreach ($site in $allSites) {
+        $siteIdx++
+        Write-Host ("  [{0,$padWidth}/{1}] {2}" -f $siteIdx, $totalSites, $site.Url) -ForegroundColor DarkGray -NoNewline
+
+        try {
+            Connect-PnPOnline -Url $site.Url -Interactive -ErrorAction Stop 2>$null
+        }
+        catch {
+            Write-Host " [connection failed]" -ForegroundColor DarkRed
+            continue
+        }
+
+        $copied = [System.Collections.Generic.List[string]]::new()
+
+        # Site Collection Admins
+        try {
+            $admins   = Get-PnPSiteCollectionAdmin -ErrorAction SilentlyContinue
+            $isAdmin  = @($admins) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
+            if ($isAdmin) {
+                if (-not $previewOnly) { Add-PnPSiteCollectionAdmin -Owners $targetUPN -ErrorAction SilentlyContinue }
+                $copied.Add("Site Collection Admin")
+            }
+        }
+        catch {}
+
+        # SharePoint Group Membership
+        try {
+            $groups = Get-PnPGroup -ErrorAction SilentlyContinue
+            foreach ($group in @($groups)) {
+                try {
+                    $members  = Get-PnPGroupMember -Identity $group.Title -ErrorAction SilentlyContinue
+                    $inGroup  = @($members) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
+                    if ($inGroup) {
+                        if (-not $previewOnly) { Add-PnPGroupMember -LoginName $targetUPN -Group $group.Title -ErrorAction SilentlyContinue }
+                        $copied.Add("Group: $($group.Title)")
+                    }
+                }
+                catch {}
+            }
+        }
+        catch {}
+
+        if ($copied.Count -gt 0) {
+            $verb = if ($previewOnly) { "found" } else { "copied" }
+            Write-Host (" → $($copied.Count) permission(s) $verb") -ForegroundColor Green
+            $results.Add([PSCustomObject]@{ Site = $site.Url; Permissions = $copied -join '; ' })
+        }
+        else {
+            Write-Host ""
+        }
+    }
+
+    Write-Host ""
+
+    if ($results.Count -gt 0) {
+        $verb = if ($previewOnly) { "found" } else { "copied"  }
+        Write-Status "Done! Permissions $verb on $($results.Count) site(s):" Green
+        Write-Host ""
+        foreach ($r in $results) {
+            Write-Host "  $($r.Site)" -ForegroundColor Cyan
+            Write-Host "    +-- $($r.Permissions)" -ForegroundColor Gray
+        }
+        Write-Host ""
+        if (Confirm-Action "Export report to Desktop?") {
+            $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
+            $file = "$env:USERPROFILE\Desktop\sp_mirror_$ts.csv"
+            $results | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
+            Write-Status "Report saved to: $file" Green
+        }
+    }
+    else {
+        Write-Info "No permissions found for '$sourceUPN' across $totalSites site(s)."
+    }
+}
+
+function Manage-SharePoint {
+    if (-not (Ensure-PnPModule)) { return }
+    if (-not (SP-Connect))       { return }
+
+    do {
+        Write-Host ""
+        Write-Host "  ==============================================" -ForegroundColor Cyan
+        Write-Host "         SHAREPOINT ACCESS MANAGEMENT           " -ForegroundColor Yellow
+        Write-Host "  ==============================================" -ForegroundColor Cyan
+        Write-Host "  Tenant: $($script:spTenantUrl)" -ForegroundColor Green
+        Write-Host "  ----------------------------------------------"
+        Write-Host "  [1]  Mirror permissions (new hire onboarding)"
+        Write-Host "  [0]  Back to main menu" -ForegroundColor Red
+        Write-Host "  ==============================================" -ForegroundColor Cyan
+        Write-Host ""
+
+        $spChoice = Read-Host "  Select"
+        switch ($spChoice) {
+            '1'  { SP-MirrorPermissions }
+            '0'  { $script:spConnected = $false; Disconnect-PnPOnline -ErrorAction SilentlyContinue; break }
+            default { Write-Err "Invalid option." }
+        }
+
+        if ($spChoice -ne '0') {
+            Write-Host ""
+            Read-Host "  Press Enter to continue"
+        }
+
+    } while ($spChoice -ne '0')
+}
+
+# -------------------------------------------
 #  MAIN MENU
 # -------------------------------------------
 function Show-Menu {
@@ -1196,6 +1392,7 @@ function Show-Menu {
     Write-Host "  |  [5]  Fix and Repair Tools         |" -ForegroundColor White
     Write-Host "  |  [6]  Domain Management            |" -ForegroundColor White
     Write-Host "  |  [7]  AD Management                |" -ForegroundColor Cyan
+    Write-Host "  |  [8]  SharePoint Management        |" -ForegroundColor Cyan
     Write-Host "  |  [Q]  Quit                         |" -ForegroundColor White
     Write-Host "  +------------------------------------+" -ForegroundColor DarkCyan
     Write-Host ""
@@ -1217,6 +1414,7 @@ do {
         '5' { Run-Repairs }
         '6' { Manage-Domain }
         '7' { Manage-AD }
+        '8' { Manage-SharePoint }
         'Q' {
             Write-Host ""
             Write-Host "  Goodbye!" -ForegroundColor Cyan
