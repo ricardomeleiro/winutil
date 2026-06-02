@@ -720,7 +720,8 @@ function AD-CreateUser {
             New-ADUser -Name "$fn $ln" -DisplayName "$fn $ln" -GivenName $fn -Surname $ln `
                 -Title $cargo -Description $desc -EmailAddress $email `
                 -SamAccountName $user -UserPrincipalName "$user@$domain" `
-                -AccountPassword $pass -Enabled $true -Path $ou -ErrorAction Stop
+                -AccountPassword $pass -Enabled $true -Path $ou `
+                -ChangePasswordAtLogon $true -ErrorAction Stop
             (Get-ADUser $user -Properties CanonicalName).CanonicalName
         } -ArgumentList $firstName, $lastName, $cargo, $description, $email, $username, $password, $ouPath, $script:adDomain
 
