@@ -1466,15 +1466,21 @@ function SP-ListUserPermissions {
 function SP-GrantConsent {
     Write-Section "GRANT PNP MANAGEMENT SHELL CONSENT"
     Write-Host ""
-    Write-Info "Registers the PnP Management Shell app in your Entra ID tenant."
-    Write-Info "Only needs to be done once. Requires a Global Administrator account."
+    Write-Info "Opens a browser so a Global Admin can approve the PnP Management Shell app."
+    Write-Info "Only needs to be done once per tenant. No PowerShell required — just click Accept."
     Write-Host ""
-    if (-not (Confirm-Action "Open browser for Global Admin consent?")) { return }
-    try {
-        Register-PnPManagementShellAccess -ErrorAction Stop
-        Write-Status "Consent granted. You can now connect with option [1]." Green
-    }
-    catch { Write-Err "Failed: $_" }
+    Write-Host "  Steps:" -ForegroundColor Cyan
+    Write-Host "    1. A browser tab will open showing Microsoft's consent page"
+    Write-Host "    2. Sign in with a Global Administrator account"
+    Write-Host "    3. Review the permissions and click 'Accept'"
+    Write-Host "    4. Return here and press Enter"
+    Write-Host ""
+    if (-not (Confirm-Action "Open browser now?")) { return }
+    $consentUrl = "https://login.microsoftonline.com/organizations/adminconsent?client_id=$($script:spClientId)"
+    Start-Process $consentUrl
+    Write-Host ""
+    Read-Host "  Press Enter once you have clicked Accept in the browser"
+    Write-Status "Done. Try connecting now with option [1]." Green
 }
 
 function Manage-SharePoint {
