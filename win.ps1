@@ -720,8 +720,7 @@ function AD-CreateUser {
             New-ADUser -Name "$fn $ln" -DisplayName "$fn $ln" -GivenName $fn -Surname $ln `
                 -Title $cargo -Description $desc -EmailAddress $email `
                 -SamAccountName $user -UserPrincipalName "$user@$domain" `
-                -AccountPassword $pass -Enabled $true -Path $ou `
-                -ChangePasswordAtLogon $true -ErrorAction Stop
+                -AccountPassword $pass -Enabled $true -Path $ou -ErrorAction Stop
             (Get-ADUser $user -Properties CanonicalName).CanonicalName
         } -ArgumentList $firstName, $lastName, $cargo, $description, $email, $username, $password, $ouPath, $script:adDomain
 
@@ -1191,162 +1190,82 @@ function Manage-AD {
 
 $spTenantUrl  = ""
 $spConnected  = $false
-# PnP Management Shell — app público multi-tenant da Microsoft/PnP.
-# IMPORTANTE: requer consentimento admin no tenant antes do primeiro uso (opção [2]).
-# Alternativa recomendada: registre um app próprio no Azure e use a opção [3].
-$spClientId_Default = "31359c7f-bd7e-475c-86db-fdb8c937548e"
-$spClientId         = $spClientId_Default
-$spConfigFile       = "$env:APPDATA\WinUtil\sp_config.json"
-
-function SP-LoadConfig {
-    if (Test-Path $spConfigFile) {
-        try {
-            $cfg = Get-Content $spConfigFile -Raw | ConvertFrom-Json
-            if ($cfg.ClientId -and $cfg.ClientId -ne "") {
-                $script:spClientId = $cfg.ClientId
-                return $cfg
-            }
-        }
-        catch {}
-    }
-    return $null
-}
-
-function SP-SaveConfig {
-    param([string]$clientId)
-    $dir = Split-Path $spConfigFile
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    @{ ClientId = $clientId } | ConvertTo-Json | Set-Content $spConfigFile -Encoding UTF8
-}
+# PnP Management Shell — public multi-tenant app, no custom registration needed
+$spClientId   = "31359c7f-bd7e-475c-86db-fdb8c937548e"
 
 function Ensure-PnPModule {
     if (Get-Module -ListAvailable -Name 'PnP.PowerShell') {
         Import-Module PnP.PowerShell -ErrorAction SilentlyContinue
         return $true
     }
-    Write-Info "PnP.PowerShell não encontrado. Instalando do PSGallery..."
+    Write-Info "PnP.PowerShell not found. Installing from PSGallery..."
     try {
         Install-Module -Name PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
         Import-Module PnP.PowerShell -ErrorAction Stop
-        Write-Status "PnP.PowerShell instalado com sucesso." Green
+        Write-Status "PnP.PowerShell installed." Green
         return $true
     }
     catch {
-        Write-Err "Falha ao instalar PnP.PowerShell: $_"
-        Write-Info "Instalação manual: Install-Module PnP.PowerShell -Scope CurrentUser"
+        Write-Err "Failed to install PnP.PowerShell: $_"
+        Write-Info "Manual install: Install-Module PnP.PowerShell -Scope CurrentUser"
         return $false
     }
 }
 
 function SP-NormalizeAdminUrl {
     param([string]$url)
+    # Strip trailing slashes, colons, path segments
     $url = $url.TrimEnd('/', '\', ':').Trim()
     if ($url -match '^(https?://[^/]+)') { $url = $Matches[1] }
-    # Converte URL raiz para URL de admin  (https://tenant.sharepoint.com → https://tenant-admin.sharepoint.com)
+    # Convert root tenant URL to admin URL  (https://tenant.sharepoint.com → https://tenant-admin.sharepoint.com)
     if ($url -match '^https://([^-][^.]+)\.sharepoint\.com$') {
         $url = "https://$($Matches[1])-admin.sharepoint.com"
     }
     return $url
 }
 
-function SP-ShowAuthHelp {
-    Write-Host ""
-    Write-Host "  +---------------------------------------------------------------+" -ForegroundColor DarkYellow
-    Write-Host "  |  ERRO DE AUTENTICAÇÃO — Como resolver:                        |" -ForegroundColor Yellow
-    Write-Host "  +---------------------------------------------------------------+" -ForegroundColor DarkYellow
-    Write-Host "  |                                                               |" -ForegroundColor DarkYellow
-    Write-Host "  |  OPÇÃO A — Consentimento do app PnP (mais rápido):            |" -ForegroundColor Cyan
-    Write-Host "  |    1. Volte ao menu e escolha opção [2]                       |" -ForegroundColor White
-    Write-Host "  |    2. Entre com uma conta Global Admin                        |" -ForegroundColor White
-    Write-Host "  |    3. Aceite as permissões solicitadas                        |" -ForegroundColor White
-    Write-Host "  |    4. Feito! Tente conectar novamente com opção [1]           |" -ForegroundColor White
-    Write-Host "  |                                                               |" -ForegroundColor DarkYellow
-    Write-Host "  |  OPÇÃO B — App próprio no Azure (recomendado, mais seguro):   |" -ForegroundColor Cyan
-    Write-Host "  |    1. Acesse portal.azure.com → Entra ID → App registrations |" -ForegroundColor White
-    Write-Host "  |    2. New registration → nome: WinUtil SP → Public client     |" -ForegroundColor White
-    Write-Host "  |    3. API permissions → SharePoint → Sites.FullControl.All   |" -ForegroundColor White
-    Write-Host "  |       (Delegated) + Grant admin consent                       |" -ForegroundColor White
-    Write-Host "  |    4. Copie o Application (client) ID                        |" -ForegroundColor White
-    Write-Host "  |    5. Volte ao menu e use a opção [3] para salvar o ID        |" -ForegroundColor White
-    Write-Host "  +---------------------------------------------------------------+" -ForegroundColor DarkYellow
-    Write-Host ""
-}
-
 function SP-Connect {
     if ($script:spConnected) { return $true }
-
-    # Carrega configuração salva (ClientId customizado, se houver)
-    SP-LoadConfig | Out-Null
-
     Write-Host ""
-    Write-Info "Informe qualquer URL do SharePoint do seu tenant."
-    $inputUrl = Read-Host "  SharePoint URL (ex: https://cinnovation.sharepoint.com)"
-    if ([string]::IsNullOrWhiteSpace($inputUrl)) { Write-Err "URL não pode ser vazia."; return $false }
+    Write-Info "Enter any SharePoint URL from your tenant (the tool will derive the admin URL)."
+    $inputUrl = Read-Host "  SharePoint URL (e.g. https://cinnovation.sharepoint.com)"
+    if ([string]::IsNullOrWhiteSpace($inputUrl)) { Write-Err "URL cannot be empty."; return $false }
     $script:spTenantUrl = SP-NormalizeAdminUrl $inputUrl
-
-    $clientLabel = if ($script:spClientId -eq $script:spClientId_Default) { "PnP Management Shell (padrão)" } else { "App customizado: $($script:spClientId)" }
-    Write-Info "Admin URL  : $($script:spTenantUrl)"
-    Write-Info "Client App : $clientLabel"
-    Write-Info "Uma janela do browser será aberta para login Microsoft..."
-
+    Write-Info "Admin URL: $($script:spTenantUrl)"
+    Write-Info "A browser window will open for Microsoft login..."
     try {
         Connect-PnPOnline -Url $script:spTenantUrl -Interactive -ClientId $script:spClientId -ErrorAction Stop
         $script:spConnected = $true
-        Write-Status "Conectado ao SharePoint Admin com sucesso." Green
+        Write-Status "Connected to SharePoint Admin." Green
         return $true
     }
     catch {
-        $errMsg = $_.ToString()
-
-        # Erro AADSTS700016 = app não consentido no tenant
-        if ($errMsg -like "*AADSTS700016*") {
-            Write-Host ""
-            Write-Err "O app '$($script:spClientId)' não está autorizado no seu tenant."
-            SP-ShowAuthHelp
-        }
-        # Erro AADSTS50011 = redirect URI inválida
-        elseif ($errMsg -like "*AADSTS50011*") {
-            Write-Err "Redirect URI inválida. Verifique as configurações do app no Azure."
-            Write-Info "Para app customizado: adicione 'http://localhost' em Authentication → Redirect URIs."
-        }
-        # Erro de acesso negado / permissão
-        elseif ($errMsg -like "*Forbidden*" -or $errMsg -like "*Access*denied*" -or $errMsg -like "*403*") {
-            Write-Err "Acesso negado. A conta não tem permissão de SharePoint Admin."
-            Write-Info "Use uma conta com papel de SharePoint Administrator ou Global Admin."
-        }
-        else {
-            Write-Err "Falha na conexão: $errMsg"
-            SP-ShowAuthHelp
-        }
+        Write-Err "Connection failed: $_"
+        Write-Info "First time? Use option [2] 'Grant PnP consent' from the SharePoint menu (Global Admin required)."
         return $false
     }
 }
 
 function SP-MirrorPermissions {
-    Write-Section "SHAREPOINT — ESPELHAR PERMISSÕES"
+    Write-Section "SHAREPOINT PERMISSION MIRROR"
     Write-Host ""
-    Write-Host "  Copia todas as permissões SharePoint de um colaborador existente" -ForegroundColor Gray
-    Write-Host "  para um novo colaborador (onboarding)." -ForegroundColor Gray
+    Write-Info "Copies all SharePoint permissions from an existing employee to a new hire."
     Write-Host ""
 
-    $sourceUPN = Read-Host "  UPN do colaborador ORIGEM  (copiar DE, ex: joao.silva@empresa.com)"
-    $targetUPN = Read-Host "  UPN do colaborador DESTINO (copiar PARA, ex: maria.souza@empresa.com)"
+    $sourceUPN = Read-Host "  Source employee UPN (mirror FROM, e.g. john.smith@contoso.com)"
+    $targetUPN = Read-Host "  New hire UPN        (mirror TO,   e.g. jane.doe@contoso.com)"
 
     if ([string]::IsNullOrWhiteSpace($sourceUPN) -or [string]::IsNullOrWhiteSpace($targetUPN)) {
-        Write-Err "UPN não pode ser vazio."
+        Write-Err "UPN cannot be empty."
         return
     }
 
-    Write-Host ""
-    Write-Host "  Modo:" -ForegroundColor Cyan
-    Write-Host "  [1] Aplicar permissões (altera o ambiente)"
-    Write-Host "  [2] Apenas visualizar (sem alterações)"
-    $modeChoice  = Read-Host "  Selecione"
+    $modeChoice = Read-Host "  Mode: [1] Apply permissions  [2] Preview only (no changes)"
     $previewOnly = ($modeChoice -eq '2')
-    if ($previewOnly) { Write-Info "Modo visualização — nenhuma alteração será feita." }
+    if ($previewOnly) { Write-Info "Preview mode — no changes will be made." }
 
     Write-Host ""
-    Write-Info "Buscando todos os sites do tenant (pode levar alguns instantes)..."
+    Write-Info "Fetching all site collections (this may take a moment)..."
 
     try {
         $allSites = Get-PnPTenantSite -ErrorAction Stop | Where-Object {
@@ -1356,27 +1275,15 @@ function SP-MirrorPermissions {
         }
     }
     catch {
-        $errMsg = $_.ToString()
-        if ($errMsg -like "*AADSTS700016*") {
-            Write-Err "App não autorizado no tenant."
-            SP-ShowAuthHelp
-        }
-        else {
-            Write-Err "Falha ao buscar sites: $errMsg"
-        }
+        Write-Err "Failed to fetch sites: $_"
         return
     }
 
     $totalSites = @($allSites).Count
-    Write-Info "Encontrado(s) $totalSites site(s). Verificando permissões de '$sourceUPN'..."
-
-    if ($totalSites -eq 0) {
-        Write-Err "Nenhum site encontrado. Verifique se a conta tem permissão de SharePoint Admin."
-        return
-    }
+    Write-Info "Found $totalSites site(s). Checking permissions for '$sourceUPN'..."
 
     if ($totalSites -gt 50 -and -not $previewOnly) {
-        if (-not (Confirm-Action "$totalSites sites encontrados — pode demorar vários minutos. Continuar?")) { return }
+        if (-not (Confirm-Action "$totalSites sites found — this may take several minutes. Continue?")) { return }
     }
 
     Write-Host ""
@@ -1384,19 +1291,17 @@ function SP-MirrorPermissions {
     $results   = [System.Collections.Generic.List[PSCustomObject]]::new()
     $siteIdx   = 0
     $padWidth  = ([string]$totalSites).Length
-    $errCount  = 0
 
     foreach ($site in $allSites) {
         $siteIdx++
         Write-Host ("  [{0,$padWidth}/{1}] {2}" -f $siteIdx, $totalSites, $site.Url) -ForegroundColor DarkGray -NoNewline
 
         try {
-            # MSAL reutiliza token em cache — sem popup adicional após o primeiro login
+            # Same ClientId → MSAL reuses cached token, no browser popup after first login
             Connect-PnPOnline -Url $site.Url -Interactive -ClientId $script:spClientId -ErrorAction Stop 2>$null
         }
         catch {
-            Write-Host " [falha de conexão]" -ForegroundColor DarkRed
-            $errCount++
+            Write-Host " [connection failed]" -ForegroundColor DarkRed
             continue
         }
 
@@ -1404,8 +1309,8 @@ function SP-MirrorPermissions {
 
         # Site Collection Admins
         try {
-            $admins  = Get-PnPSiteCollectionAdmin -ErrorAction SilentlyContinue
-            $isAdmin = @($admins) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
+            $admins   = Get-PnPSiteCollectionAdmin -ErrorAction SilentlyContinue
+            $isAdmin  = @($admins) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
             if ($isAdmin) {
                 if (-not $previewOnly) { Add-PnPSiteCollectionAdmin -Owners $targetUPN -ErrorAction SilentlyContinue }
                 $copied.Add("Site Collection Admin")
@@ -1413,16 +1318,16 @@ function SP-MirrorPermissions {
         }
         catch {}
 
-        # Membros de grupos SharePoint
+        # SharePoint Group Membership
         try {
             $groups = Get-PnPGroup -ErrorAction SilentlyContinue
             foreach ($group in @($groups)) {
                 try {
-                    $members = Get-PnPGroupMember -Identity $group.Title -ErrorAction SilentlyContinue
-                    $inGroup = @($members) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
+                    $members  = Get-PnPGroupMember -Identity $group.Title -ErrorAction SilentlyContinue
+                    $inGroup  = @($members) | Where-Object { $_.Email -eq $sourceUPN -or $_.LoginName -like "*$sourceUPN*" }
                     if ($inGroup) {
                         if (-not $previewOnly) { Add-PnPGroupMember -LoginName $targetUPN -Group $group.Title -ErrorAction SilentlyContinue }
-                        $copied.Add("Grupo: $($group.Title)")
+                        $copied.Add("Group: $($group.Title)")
                     }
                 }
                 catch {}
@@ -1431,9 +1336,9 @@ function SP-MirrorPermissions {
         catch {}
 
         if ($copied.Count -gt 0) {
-            $verb = if ($previewOnly) { "encontrado(s)" } else { "copiado(s)" }
-            Write-Host (" → $($copied.Count) permissão(ões) $verb") -ForegroundColor Green
-            $results.Add([PSCustomObject]@{ Site = $site.Url; Permissoes = $copied -join '; ' })
+            $verb = if ($previewOnly) { "found" } else { "copied" }
+            Write-Host (" → $($copied.Count) permission(s) $verb") -ForegroundColor Green
+            $results.Add([PSCustomObject]@{ Site = $site.Url; Permissions = $copied -join '; ' })
         }
         else {
             Write-Host ""
@@ -1442,102 +1347,138 @@ function SP-MirrorPermissions {
 
     Write-Host ""
 
-    if ($errCount -gt 0) {
-        Write-Info "$errCount site(s) com falha de conexão foram ignorados."
-    }
-
     if ($results.Count -gt 0) {
-        $verb = if ($previewOnly) { "encontradas" } else { "copiadas" }
-        Write-Status "Concluído! Permissões $verb em $($results.Count) site(s):" Green
+        $verb = if ($previewOnly) { "found" } else { "copied"  }
+        Write-Status "Done! Permissions $verb on $($results.Count) site(s):" Green
         Write-Host ""
         foreach ($r in $results) {
             Write-Host "  $($r.Site)" -ForegroundColor Cyan
-            Write-Host "    +-- $($r.Permissoes)" -ForegroundColor Gray
+            Write-Host "    +-- $($r.Permissions)" -ForegroundColor Gray
         }
         Write-Host ""
-        if (Confirm-Action "Exportar relatório para o Desktop?") {
+        if (Confirm-Action "Export report to Desktop?") {
             $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
             $file = "$env:USERPROFILE\Desktop\sp_mirror_$ts.csv"
             $results | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
-            Write-Status "Relatório salvo em: $file" Green
+            Write-Status "Report saved to: $file" Green
         }
     }
     else {
-        Write-Info "Nenhuma permissão encontrada para '$sourceUPN' nos $totalSites site(s) verificados."
-        Write-Info "Certifique-se de que o UPN está correto (formato: usuario@dominio.com)."
+        Write-Info "No permissions found for '$sourceUPN' across $totalSites site(s)."
+    }
+}
+
+function SP-ListUserPermissions {
+    Write-Section "LIST USER SHAREPOINT PERMISSIONS"
+    Write-Host ""
+
+    $userUPN = Read-Host "  User UPN (e.g. john.smith@cinnovation.com)"
+    if ([string]::IsNullOrWhiteSpace($userUPN)) { Write-Err "UPN cannot be empty."; return }
+
+    Write-Host ""
+    Write-Info "Fetching all site collections..."
+
+    try {
+        $allSites = Get-PnPTenantSite -ErrorAction Stop | Where-Object {
+            $_.Template -ne 'RedirectSite#0' -and
+            $_.Template -ne 'SRCHCEN#0'      -and
+            $_.Url -notlike '*-my.sharepoint.com*'
+        }
+    }
+    catch { Write-Err "Failed to fetch sites: $_"; return }
+
+    $totalSites = @($allSites).Count
+    Write-Info "Scanning $totalSites site(s) for '$userUPN'..."
+    Write-Host ""
+
+    $results  = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $siteIdx  = 0
+    $padWidth = ([string]$totalSites).Length
+
+    foreach ($site in $allSites) {
+        $siteIdx++
+        Write-Host ("  [{0,$padWidth}/{1}] {2}" -f $siteIdx, $totalSites, $site.Url) -ForegroundColor DarkGray -NoNewline
+
+        try {
+            Connect-PnPOnline -Url $site.Url -Interactive -ClientId $script:spClientId -ErrorAction Stop 2>$null
+        }
+        catch { Write-Host " [connection failed]" -ForegroundColor DarkRed; continue }
+
+        $found = [System.Collections.Generic.List[string]]::new()
+
+        # Site Collection Admin
+        try {
+            $admins = Get-PnPSiteCollectionAdmin -ErrorAction SilentlyContinue
+            if (@($admins) | Where-Object { $_.Email -eq $userUPN -or $_.LoginName -like "*$userUPN*" }) {
+                $found.Add("Site Collection Admin")
+            }
+        }
+        catch {}
+
+        # SharePoint Group Membership
+        try {
+            foreach ($group in @(Get-PnPGroup -ErrorAction SilentlyContinue)) {
+                try {
+                    $members = Get-PnPGroupMember -Identity $group.Title -ErrorAction SilentlyContinue
+                    if (@($members) | Where-Object { $_.Email -eq $userUPN -or $_.LoginName -like "*$userUPN*" }) {
+                        $found.Add("Group: $($group.Title)")
+                    }
+                }
+                catch {}
+            }
+        }
+        catch {}
+
+        if ($found.Count -gt 0) {
+            Write-Host " -> $($found.Count) permission(s)" -ForegroundColor Green
+            $results.Add([PSCustomObject]@{ Site = $site.Url; Permissions = $found -join '; ' })
+        }
+        else { Write-Host "" }
+    }
+
+    Write-Host ""
+
+    if ($results.Count -gt 0) {
+        Write-Status "$userUPN has access to $($results.Count) site(s):" Green
+        Write-Host ""
+        Write-Host ("  {0,-55} {1}" -f "SITE", "PERMISSIONS") -ForegroundColor Cyan
+        Write-Host "  $('-' * 100)" -ForegroundColor DarkCyan
+        foreach ($r in $results) {
+            Write-Host ("  {0,-55} " -f $r.Site) -ForegroundColor White -NoNewline
+            Write-Host $r.Permissions -ForegroundColor Gray
+        }
+        Write-Host "  $('-' * 100)" -ForegroundColor DarkCyan
+        Write-Host "  Total: $($results.Count) site(s)" -ForegroundColor Yellow
+        Write-Host ""
+        if (Confirm-Action "Export report to Desktop?") {
+            $ts   = Get-Date -Format "yyyyMMdd_HHmmss"
+            $safe = $userUPN -replace '[^a-zA-Z0-9._-]', '_'
+            $file = "$env:USERPROFILE\Desktop\sp_access_${safe}_${ts}.csv"
+            $results | Export-Csv -Path $file -NoTypeInformation -Encoding UTF8
+            Write-Status "Report saved to: $file" Green
+        }
+    }
+    else {
+        Write-Info "No SharePoint permissions found for '$userUPN' across $totalSites site(s)."
     }
 }
 
 function SP-GrantConsent {
-    Write-Section "CONSENTIMENTO DO APP PnP MANAGEMENT SHELL"
+    Write-Section "GRANT PNP MANAGEMENT SHELL CONSENT"
     Write-Host ""
-    Write-Host "  Este processo registra o app PnP Management Shell no seu tenant Entra ID." -ForegroundColor Gray
-    Write-Host "  É necessário apenas uma vez. Requer conta de Global Administrator." -ForegroundColor Gray
+    Write-Info "Registers the PnP Management Shell app in your Entra ID tenant."
+    Write-Info "Only needs to be done once. Requires a Global Administrator account."
     Write-Host ""
-    Write-Host "  Após o consentimento, qualquer usuário do tenant poderá usar a opção [1]." -ForegroundColor DarkYellow
-    Write-Host ""
-    if (-not (Confirm-Action "Abrir browser para consentimento como Global Admin?")) { return }
+    if (-not (Confirm-Action "Open browser for Global Admin consent?")) { return }
     try {
         Register-PnPManagementShellAccess -ErrorAction Stop
-        Write-Status "Consentimento concedido! Use a opção [1] para conectar." Green
+        Write-Status "Consent granted. You can now connect with option [1]." Green
     }
-    catch {
-        $errMsg = $_.ToString()
-        Write-Err "Falha: $errMsg"
-        if ($errMsg -like "*Register-PnPManagementShellAccess*" -or $errMsg -like "*não reconhecido*") {
-            Write-Info "Versão do PnP.PowerShell pode estar desatualizada."
-            Write-Info "Atualize: Update-Module PnP.PowerShell"
-        }
-        Write-Info "Alternativa manual: acesse https://aka.ms/pnp-auth-consent para consentir pelo browser."
-    }
-}
-
-function SP-ConfigureCustomApp {
-    Write-Section "CONFIGURAR APP AZURE CUSTOMIZADO"
-    Write-Host ""
-    Write-Host "  Use esta opção se você registrou um app próprio no Azure portal." -ForegroundColor Gray
-    Write-Host "  Isso é mais seguro e não depende de consentimento global do PnP." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  Como registrar o app (se ainda não fez):" -ForegroundColor Cyan
-    Write-Host "  1. portal.azure.com → Entra ID → App registrations → New registration"
-    Write-Host "  2. Nome: WinUtil SharePoint | Tipo: Public client (mobile and desktop)"
-    Write-Host "  3. API permissions → SharePoint → Delegated → Sites.FullControl.All"
-    Write-Host "     + Microsoft Graph → Delegated → User.Read"
-    Write-Host "  4. Grant admin consent → Copie o Application (client) ID"
-    Write-Host ""
-
-    $currentId = if ($script:spClientId -ne $script:spClientId_Default) { $script:spClientId } else { "(nenhum configurado)" }
-    Write-Info "Client ID atual: $currentId"
-    Write-Host ""
-
-    $newId = Read-Host "  Cole o Application (client) ID do seu app (Enter para cancelar)"
-    if ([string]::IsNullOrWhiteSpace($newId)) { Write-Info "Cancelado."; return }
-
-    # Valida formato GUID
-    if ($newId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-        Write-Err "Formato inválido. O Client ID deve ser um GUID (ex: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."
-        return
-    }
-
-    $script:spClientId = $newId
-    SP-SaveConfig -clientId $newId
-    $script:spConnected = $false  # força reconexão com novo app
-    Write-Status "App customizado configurado! Client ID: $newId" Green
-    Write-Info "A próxima conexão usará este app. A configuração foi salva em: $spConfigFile"
-}
-
-function SP-ResetConfig {
-    $script:spClientId  = $script:spClientId_Default
-    $script:spConnected = $false
-    if (Test-Path $spConfigFile) { Remove-Item $spConfigFile -Force }
-    Write-Status "Configuração resetada para PnP Management Shell (padrão)." Green
+    catch { Write-Err "Failed: $_" }
 }
 
 function Manage-SharePoint {
     if (-not (Ensure-PnPModule)) { return }
-
-    # Carrega ClientId salvo, se existir
-    SP-LoadConfig | Out-Null
 
     do {
         Write-Host ""
@@ -1545,35 +1486,30 @@ function Manage-SharePoint {
         Write-Host "         SHAREPOINT ACCESS MANAGEMENT           " -ForegroundColor Yellow
         Write-Host "  ==============================================" -ForegroundColor Cyan
         if ($script:spConnected) {
-            Write-Host "  Status : Conectado" -ForegroundColor Green
-            Write-Host "  Tenant : $($script:spTenantUrl)" -ForegroundColor Green
+            Write-Host "  Tenant: $($script:spTenantUrl)" -ForegroundColor Green
         } else {
-            Write-Host "  Status : Não conectado" -ForegroundColor Yellow
+            Write-Host "  Status: Not connected" -ForegroundColor Yellow
         }
-        $appLabel = if ($script:spClientId -eq $script:spClientId_Default) { "PnP Management Shell (padrão)" } else { "App customizado" }
-        Write-Host "  App    : $appLabel" -ForegroundColor Gray
         Write-Host "  ----------------------------------------------"
-        Write-Host "  [1]  Espelhar permissões (onboarding de novo colaborador)" -ForegroundColor Green
-        Write-Host "  [2]  Consentimento inicial — PnP Management Shell (Global Admin)" -ForegroundColor DarkYellow
-        Write-Host "  [3]  Configurar app Azure próprio (recomendado)" -ForegroundColor Cyan
-        Write-Host "  [4]  Resetar para configuração padrão" -ForegroundColor DarkGray
-        Write-Host "  [0]  Voltar ao menu principal" -ForegroundColor Red
+        Write-Host "  [1]  Mirror permissions (new hire onboarding)"
+        Write-Host "  [3]  List all permissions of a user"
+        Write-Host "  [2]  First-time setup: grant PnP consent (Global Admin)" -ForegroundColor DarkYellow
+        Write-Host "  [0]  Back to main menu" -ForegroundColor Red
         Write-Host "  ==============================================" -ForegroundColor Cyan
         Write-Host ""
 
-        $spChoice = Read-Host "  Selecione"
+        $spChoice = Read-Host "  Select"
         switch ($spChoice) {
             '1'  { if (SP-Connect) { SP-MirrorPermissions } }
+            '3'  { if (SP-Connect) { SP-ListUserPermissions } }
             '2'  { SP-GrantConsent }
-            '3'  { SP-ConfigureCustomApp }
-            '4'  { SP-ResetConfig }
             '0'  { $script:spConnected = $false; Disconnect-PnPOnline -ErrorAction SilentlyContinue; break }
-            default { Write-Err "Opção inválida." }
+            default { Write-Err "Invalid option." }
         }
 
         if ($spChoice -ne '0') {
             Write-Host ""
-            Read-Host "  Pressione Enter para continuar"
+            Read-Host "  Press Enter to continue"
         }
 
     } while ($spChoice -ne '0')
